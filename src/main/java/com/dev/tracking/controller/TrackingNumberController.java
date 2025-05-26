@@ -17,20 +17,7 @@ import reactor.core.publisher.Mono;
 import java.time.Instant;
 import java.time.format.DateTimeParseException;
 
-/**
- * REST controller for handling tracking number generation requests.
- *
- * This controller serves as the entry point for our API, handling HTTP requests
- * and orchestrating the business logic. It's designed following RESTful principles
- * and implements proper error handling for a production-ready API.
- *
- * Key design principles implemented:
- * 1. Reactive programming for high concurrency
- * 2. Proper HTTP status codes and error responses
- * 3. Input validation with meaningful error messages
- * 4. Separation of concerns between web layer and business logic
- * 5. Comprehensive error handling for edge cases
- */
+
 @Slf4j
 @RestController
 @RequestMapping("/api/v1/tracking")
@@ -74,6 +61,46 @@ public class TrackingNumberController {
         return buildRequestDto(originCountryId, destinationCountryId, weight, createdAt,
                 customerId, customerName, customerSlug)
                 .flatMap(trackingNumberService::generateTrackingNumber)
+                .map(response -> ResponseEntity.ok().body((Object) response))
+                .onErrorResume(this::handleError);
+    }
+
+    /**
+     * Search tracking numbers by various criteria.
+     * Searches Redis first, then MongoDB if not found in cache.
+     */
+    @GetMapping("/search")
+    public Mono<ResponseEntity<Object>> searchTrackingNumbers(
+            @RequestParam(required = false) String trackingNumber,
+            @RequestParam(required = false) String customerName,
+            @RequestParam(required = false) String customerSlug,
+            @RequestParam(required = false) String originCountryId,
+            @RequestParam(required = false) String destinationCountryId) {
+
+        log.info("Received search request with parameters: trackingNumber={}, customerName={}, customerSlug={}, originCountryId={}, destinationCountryId={}",
+                trackingNumber, customerName, customerSlug, originCountryId, destinationCountryId);
+
+        return trackingNumberService.searchTrackingNumbers(trackingNumber, customerName, customerSlug, originCountryId, destinationCountryId)
+                .map(response -> ResponseEntity.ok().body((Object) response))
+                .onErrorResume(this::handleError);
+    }
+
+    /**
+     * Get all tracking numbers with pagination.
+     * Fetches from Redis first, syncs with MongoDB, returns paginated results.
+     */
+    @GetMapping("/all")
+    public Mono<ResponseEntity<Object>> getAllTrackingNumbers(
+            @RequestParam(defaultValue = "0") int page,
+            @RequestParam(defaultValue = "10") int size) {
+
+        log.info("Received request to get all tracking numbers - page: {}, size: {}", page, size);
+
+        if (size > 50) {
+            size = 50; // Limit max page size
+        }
+
+        return trackingNumberService.getAllTrackingNumbers(page, size)
                 .map(response -> ResponseEntity.ok().body((Object) response))
                 .onErrorResume(this::handleError);
     }
