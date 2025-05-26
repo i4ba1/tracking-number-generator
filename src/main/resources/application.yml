@@ -1,0 +1,148 @@
+# Spring Boot Application Configuration
+# This file configures our tracking number generator API for different environments
+
+server:
+  port: ${PORT:31257}  # Supports dynamic port assignment for cloud deployments
+  shutdown: graceful   # Ensures in-flight requests complete before shutdown
+
+spring:
+  profiles:
+    active: dev
+  application:
+    name: tracking-number-generator
+
+  # MongoDB Configuration
+  data:
+    mongodb:
+      uri: mongodb://localhost:27017/tracking_numbers?maxPoolSize=20&minPoolSize=5&maxIdleTimeMS=30000&maxLifeTimeMS=60000&connectTimeoutMS=10000&socketTimeoutMS=5000
+
+    # Redis Configuration
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:}
+      database: ${REDIS_DATABASE:0}
+      # Connection pool settings
+      lettuce:
+        pool:
+          max-active: 20
+          max-idle: 10
+          min-idle: 5
+          max-wait: 10000ms
+
+  # WebFlux Configuration
+  webflux:
+    # Enable detailed error messages in development
+    problemdetails:
+      enabled: true
+
+# Actuator Configuration for Monitoring
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+  endpoint:
+    health:
+      show-details: when-authorized
+  prometheus:
+    metrics:
+      export:
+        enabled: true
+
+# Logging Configuration
+logging:
+  level:
+    com.trackingapi: ${LOG_LEVEL:INFO}
+    org.springframework.data.mongodb: WARN
+    org.springframework.data.redis: WARN
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss} - %msg%n"
+    file: "%d{yyyy-MM-dd HH:mm:ss} [%thread] %-5level %logger{36} - %msg%n"
+
+# Custom Application Properties
+tracking:
+  generation:
+    max-retry-attempts: 5
+    cache-expiration-hours: 24
+    max-length: 16
+    min-length: 8
+    charset: "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+
+---
+# Development Profile
+spring:
+  config:
+    activate:
+      on-profile: dev
+
+  data:
+    mongodb:
+      uri: mongodb://localhost:27017/tracking_numbers_dev
+    redis:
+      host: localhost
+      port: 6379
+
+server:
+  compression:
+    enabled: true
+    mime-types: application/json,text/plain
+    min-response-size: 1024
+
+logging:
+  level:
+    com.trackingapi: INFO
+    root: INFO
+
+---
+# Production Profile
+spring:
+  config:
+    activate:
+      on-profile: prod
+
+  data:
+    mongodb:
+      uri: ${MONGODB_URI}
+
+    redis:
+      host: ${REDIS_HOST}
+      port: ${REDIS_PORT}
+      password: ${REDIS_PASSWORD}
+
+server:
+  # Production server configuration
+  compression:
+    enabled: true
+    mime-types: application/json,text/plain
+    min-response-size: 1024
+
+logging:
+  level:
+    com.trackingapi: INFO
+    root: WARN
+  file:
+    name: logs/tracking-api.log
+    max-size: 100MB
+    max-history: 30
+
+---
+# Test Profile
+spring:
+  config:
+    activate:
+      on-profile: test
+
+  data:
+    mongodb:
+      # Use embedded MongoDB for testing
+      uri: mongodb://localhost:27017/tracking_numbers_test
+
+  # Disable Redis for unit tests (can be overridden for integration tests)
+  autoconfigure:
+    exclude: org.springframework.boot.autoconfigure.data.redis.RedisAutoConfiguration
+
+logging:
+  level:
+    com.trackingapi: INFO
+    org.springframework.test: DEBUG

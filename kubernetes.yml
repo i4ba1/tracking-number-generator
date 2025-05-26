@@ -1,0 +1,131 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: tracking-api
+  labels:
+    app: tracking-api
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: tracking-api
+  template:
+    metadata:
+      labels:
+        app: tracking-api
+    spec:
+      containers:
+        - name: tracking-api
+          image: tracking-api:latest
+          ports:
+            - containerPort: 8080  # ✅ Fixed: Spring Boot runs on 8080
+          env:
+            - name: SPRING_PROFILES_ACTIVE
+              value: "prod"
+            - name: MONGODB_URI
+              valueFrom:
+                secretKeyRef:
+                  name: tracking-secrets
+                  key: mongodb-uri
+            - name: REDIS_HOST
+              valueFrom:
+                configMapKeyRef:
+                  name: tracking-config
+                  key: redis-host
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: tracking-secrets
+                  key: redis-password
+            - name: SERVER_PORT
+              value: "8080"
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "250m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+          livenessProbe:
+            httpGet:
+              path: /actuator/health
+              port: 8080  # ✅ Fixed: Correct port
+            initialDelaySeconds: 60
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /actuator/health
+              port: 8080  # ✅ Fixed: Correct port
+            initialDelaySeconds: 30
+            periodSeconds: 10
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: tracking-api-service
+spec:
+  selector:
+    app: tracking-api
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 8080  # ✅ Fixed: Target the correct container port
+  type: LoadBalancer
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: tracking-config
+data:
+  redis-host: "redis-service"
+  log-level: "INFO"
+
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: tracking-secrets
+type: Opaque
+data:
+  # Replace these with actual base64 encoded values
+  # Example: echo -n "mongodb://user:pass@host:27017/db" | base64
+  mongodb-uri: bW9uZ29kYjovL21vbmdvZGI6MjcwMTcvdHJhY2tpbmdfbnVtYmVycw==
+  redis-password: ""  # Empty if no password
+
+---
+# Redis Deployment (if not using external service)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: redis
+  template:
+    metadata:
+      labels:
+        app: redis
+    spec:
+      containers:
+        - name: redis
+          image: redis:7.0-alpine
+          ports:
+            - containerPort: 6379
+          command: ["redis-server", "--appendonly", "yes"]
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis-service
+spec:
+  selector:
+    app: redis
+  ports:
+    - protocol: TCP
+      port: 6379
+      targetPort: 6379
