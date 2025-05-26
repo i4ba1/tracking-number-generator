@@ -7,16 +7,7 @@ import lombok.NoArgsConstructor;
 
 import java.time.Instant;
 
-/**
- * Data Transfer Object for the tracking number generation request.
- *
- * This class encapsulates all the parameters that clients can send to our API.
- * We use Bean Validation annotations to enforce data quality at the API boundary,
- * which helps us catch issues early and provide clear error messages to clients.
- *
- * The validation approach follows the "fail fast" principle - we validate input
- * as soon as it enters our system, before any business logic is executed.
- */
+
 @Data
 @NoArgsConstructor
 @AllArgsConstructor

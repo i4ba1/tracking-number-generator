@@ -12,19 +12,7 @@ import org.springframework.data.mongodb.core.mapping.Document;
 
 import java.time.Instant;
 
-/**
- * Entity representing a generated tracking number in our system.
- * <p>
- * This class models the core business object that we store in MongoDB.
- * We use MongoDB's document-based storage because it provides excellent
- * horizontal scaling capabilities and flexible schema evolution.
- * <p>
- * Key design decisions:
- * - The tracking number itself is indexed for fast lookups and uniqueness validation
- * - We store creation metadata to support auditing and debugging
- * - Customer information is denormalized for query performance
- * - Weight and route information support future analytics requirements
- */
+
 @Data
 @AllArgsConstructor
 @NoArgsConstructor

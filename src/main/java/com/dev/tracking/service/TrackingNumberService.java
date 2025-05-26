@@ -1,13 +1,16 @@
 package com.dev.tracking.service;
 
-import com.dev.tracking.dto.TrackingNumberRequest;
-import com.dev.tracking.dto.TrackingNumberResponse;
+import com.dev.tracking.dto.*;
 import com.dev.tracking.model.TrackingNumber;
 import com.dev.tracking.repository.TrackingNumberRepository;
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Sort;
 import org.springframework.data.redis.core.ReactiveRedisTemplate;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Mono;
@@ -16,30 +19,9 @@ import reactor.util.retry.Retry;
 import java.security.SecureRandom;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.List;
 
-/**
- * Service class responsible for generating unique tracking numbers.
- *
- * This service implements a sophisticated tracking number generation strategy
- * that balances uniqueness, performance, and scalability requirements. The
- * approach combines multiple techniques to ensure we can handle high concurrency
- * while maintaining data integrity.
- *
- * Key architectural decisions explained:
- *
- * 1. Hybrid Generation Strategy: We use both deterministic elements (based on
- *    input parameters) and random elements to create tracking numbers that are
- *    both meaningful and highly unique.
- *
- * 2. Multi-layer Uniqueness Validation: We use Redis for fast duplicate detection
- *    and MongoDB for persistent storage, creating a defense-in-depth approach.
- *
- * 3. Reactive Retry Logic: When collisions occur, we automatically retry with
- *    exponential backoff to handle race conditions gracefully.
- *
- * 4. Horizontal Scalability: By using distributed systems (Redis + MongoDB),
- *    this service can scale across multiple application instances.
- */
+
 @Slf4j
 @Service
 @RequiredArgsConstructor
@@ -49,11 +31,15 @@ public class TrackingNumberService {
     private static final int MAX_TRACKING_NUMBER_LENGTH = 16;
     private static final int MIN_TRACKING_NUMBER_LENGTH = 8;
     private static final String REDIS_TRACKING_PREFIX = "tracking:";
+    private static final String REDIS_SEARCH_PREFIX = "search:";
+    private static final String REDIS_ALL_KEY = "all_tracking_numbers";
     private static final Duration REDIS_EXPIRY = Duration.ofHours(24);
+    private static final Duration SEARCH_CACHE_EXPIRY = Duration.ofMinutes(30);
 
     private final TrackingNumberRepository repository;
     private final ReactiveRedisTemplate<String, String> redisTemplate;
     private final SecureRandom secureRandom;
+    private final ObjectMapper objectMapper = new ObjectMapper();
 
     /**
      * Constructor injection provides better testability and immutability.
@@ -92,6 +78,144 @@ public class TrackingNumberService {
                 .retryWhen(Retry.backoff(5, Duration.ofMillis(100))
                         .maxBackoff(Duration.ofSeconds(2))
                         .filter(throwable -> throwable instanceof TrackingNumberCollisionException));
+    }
+
+    /**
+     * Search tracking numbers by multiple criteria
+     * Strategy: Check Redis first, then MongoDB, update Redis with results
+     */
+    public Mono<SearchResponse> searchTrackingNumbers(String trackingNumber, String customerName,
+                                                      String customerSlug, String originCountryId,
+                                                      String destinationCountryId) {
+
+        String searchKey = buildSearchKey(trackingNumber, customerName, customerSlug, originCountryId, destinationCountryId);
+
+        // First check Redis cache
+        return redisTemplate.opsForValue().get(REDIS_SEARCH_PREFIX + searchKey)
+                .flatMap(cachedResult -> {
+                    try {
+                        SearchResponse cached = objectMapper.readValue(cachedResult, SearchResponse.class);
+                        cached.setSource("redis");
+                        log.debug("Found search results in Redis cache");
+                        return Mono.just(cached);
+                    } catch (JsonProcessingException e) {
+                        log.warn("Failed to deserialize cached search result", e);
+                        return searchInDatabase(trackingNumber, customerName, customerSlug, originCountryId, destinationCountryId, searchKey);
+                    }
+                })
+                .switchIfEmpty(searchInDatabase(trackingNumber, customerName, customerSlug, originCountryId, destinationCountryId, searchKey));
+    }
+
+    /**
+     * Get all tracking numbers with pagination and cache sync
+     */
+    public Mono<PagedResponse> getAllTrackingNumbers(int page, int size) {
+        return syncCacheWithDatabase()
+                .then(getPaginatedFromCache(page, size))
+                .switchIfEmpty(getPaginatedFromDatabase(page, size));
+    }
+
+    private Mono<SearchResponse> searchInDatabase(String trackingNumber, String customerName, String customerSlug,
+                                                  String originCountryId, String destinationCountryId, String searchKey) {
+        log.debug("Searching in MongoDB");
+
+        return repository.findBySearchCriteria(trackingNumber, customerName, customerSlug, originCountryId, destinationCountryId)
+                .map(TrackingNumberInfo::new)
+                .collectList()
+                .map(results -> {
+                    SearchResponse response = new SearchResponse(results, results.size(), "mongodb");
+
+                    // Cache the search result
+                    try {
+                        String serialized = objectMapper.writeValueAsString(response);
+                        redisTemplate.opsForValue().set(REDIS_SEARCH_PREFIX + searchKey, serialized, SEARCH_CACHE_EXPIRY).subscribe();
+
+                        // Also update individual tracking number cache
+                        results.forEach(this::cacheTrackingNumberInfo);
+                    } catch (JsonProcessingException e) {
+                        log.warn("Failed to cache search result", e);
+                    }
+
+                    return response;
+                })
+                .defaultIfEmpty(SearchResponse.notFound());
+    }
+
+    private Mono<Void> syncCacheWithDatabase() {
+        return repository.findAll()
+                .map(TrackingNumberInfo::new)
+                .collectList()
+                .flatMap(allData -> {
+                    try {
+                        String serialized = objectMapper.writeValueAsString(allData);
+                        return redisTemplate.opsForValue().set(REDIS_ALL_KEY, serialized, REDIS_EXPIRY).then();
+                    } catch (JsonProcessingException e) {
+                        log.error("Failed to sync cache with database", e);
+                        return Mono.empty();
+                    }
+                });
+    }
+
+    private Mono<PagedResponse> getPaginatedFromCache(int page, int size) {
+        return redisTemplate.opsForValue().get(REDIS_ALL_KEY)
+                .flatMap(cachedData -> {
+                    try {
+                        List<TrackingNumberInfo> allData = objectMapper.readValue(cachedData,
+                                objectMapper.getTypeFactory().constructCollectionType(List.class, TrackingNumberInfo.class));
+
+                        int start = page * size;
+                        int end = Math.min(start + size, allData.size());
+
+                        if (start >= allData.size()) {
+                            return Mono.just(new PagedResponse(List.of(), page, size, allData.size()));
+                        }
+
+                        List<TrackingNumberInfo> pageData = allData.subList(start, end);
+                        return Mono.just(new PagedResponse(pageData, page, size, allData.size()));
+
+                    } catch (JsonProcessingException e) {
+                        log.warn("Failed to deserialize cached data", e);
+                        return Mono.empty();
+                    }
+                });
+    }
+
+    private Mono<PagedResponse> getPaginatedFromDatabase(int page, int size) {
+        PageRequest pageRequest = PageRequest.of(page, size, Sort.by(Sort.Direction.DESC, "createdAt"));
+
+        return repository.findAll(pageRequest.getSort())
+                .skip(page * size)
+                .take(size)
+                .map(TrackingNumberInfo::new)
+                .collectList()
+                .zipWith(repository.count())
+                .map(tuple -> new PagedResponse(tuple.getT1(), page, size, tuple.getT2()));
+    }
+
+    private void cacheTrackingNumberInfo(TrackingNumberInfo info) {
+        try {
+            String serialized = objectMapper.writeValueAsString(info);
+            redisTemplate.opsForValue().set(REDIS_TRACKING_PREFIX + info.getTrackingNumber(), serialized, REDIS_EXPIRY).subscribe();
+        } catch (JsonProcessingException e) {
+            log.warn("Failed to cache tracking number info", e);
+        }
+    }
+
+    private String buildSearchKey(String trackingNumber, String customerName, String customerSlug,
+                                  String originCountryId, String destinationCountryId) {
+        return String.format("%s:%s:%s:%s:%s",
+                trackingNumber != null ? trackingNumber : "",
+                customerName != null ? customerName : "",
+                customerSlug != null ? customerSlug : "",
+                originCountryId != null ? originCountryId : "",
+                destinationCountryId != null ? destinationCountryId : "").hashCode() + "";
+    }
+
+    private void invalidateAllCache() {
+        redisTemplate.delete(REDIS_ALL_KEY).subscribe();
+        redisTemplate.keys(REDIS_SEARCH_PREFIX + "*")
+                .flatMap(redisTemplate::delete)
+                .subscribe();
     }
 
     /**

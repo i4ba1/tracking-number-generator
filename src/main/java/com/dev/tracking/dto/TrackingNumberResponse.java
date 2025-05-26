@@ -6,16 +6,7 @@ import lombok.NoArgsConstructor;
 
 import java.time.Instant;
 
-/**
- * Data Transfer Object for the tracking number generation response.
- *
- * This class defines what our API returns to clients. We keep it simple
- * but extensible, following the API specification while allowing for
- * future enhancements without breaking changes.
- *
- * The response format is designed to be both human-readable and
- * machine-parseable, supporting integration with various client systems.
- */
+
 @Data
 @NoArgsConstructor
 @AllArgsConstructor
